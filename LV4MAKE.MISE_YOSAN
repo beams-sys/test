@@ -1,0 +1,582 @@
+#!/bin/bash -vx
+#
+# 概要：予算策定用の売上集計
+# 詳細：
+# 対象：
+# シェル名 :LV4MAKE.MISE_YOSAN
+# 作成日:2016/0506
+# 作成者:Shuichi Watanabe
+
+# 変数の定義
+dir=/home/beams
+semd=${dir}/SEMAPHORE
+lv2d=${dir}/LV2
+lv3d=${dir}/LV3
+lv4d=${dir}/LV4
+apld=${dir}/AP/MISE_REP
+
+tmp=/tmp/tmp_$$
+today=$1
+
+# 走行ログの記録
+logd=${dir}/LOG
+logf=${logd}/LOG.$(basename $0).${HOSTNAME}.$(date +%Y%m%d)_$(date +%Y%m%d%H%M%S).$$
+echo ${logf} &> /dev/null
+exec 2> ${logf}
+
+####################################################################################
+#エラーハンドリング
+####################################################################################
+ERROR_CHECK() {
+        [ $(plus ${PIPESTATUS[@]}) -eq 0 ] && return
+
+        echo "$HOSTNAME $(basename $0) ERROR $(date +%Y%m%d%H%M%S)" >> $logd/UPCNT
+        touch $semd/$(basename $0).$HOSTNAME.ERROR.$today
+
+        echo "ERROR!!"
+        exit 1
+}
+
+
+####################################################################################
+#起動時刻の記録
+####################################################################################
+echo "$HOSTNAME $(basename $0) START $(date +%Y%m%d%H%M%S)" >> $logd/UPCNT
+touch $semd/$(basename $0).$HOSTNAME.START.$today
+
+ #--------------------
+ # 処理日か判断
+ #--------------------
+
+ # 処理日でない場合、正常終了。
+  if [ ${today} -eq $(echo ${today} | self 1.1.4)0610 ] ; then
+        mdate -e $(mdate $(echo ${today} | self 1.1.4)"05"m/-26)m $(echo ${today} | self 1.1.4)"05"m    |
+        tarr                                                                                            > $tmp-month
+
+  elif [ ${today} -eq $(echo ${today} | self 1.1.4)1210  ] ; then
+        mdate -e $(mdate $(echo ${today} | self 1.1.4)"11"m/-26)m $(echo ${today} | self 1.1.4)"11"m    |
+        tarr                                                                                            > $tmp-month
+
+  else touch $tmp-ng    |
+       exit0
+
+  fi
+
+ #--------------------
+ # マスタ関連
+ #--------------------
+
+ # 店舗マスタ
+  cat ${lv3d}/MST/MST_COM_STORE/TBL/MST_YOSAN_STORE             |
+  self 1 2 4 5 6                                                |
+  # 1:店番 2:予算集計店番 3:業態コード 4:当初開店日 5:退店日
+  join2 +0 key=1 ${lv3d}/MST/MST_COM_STORE/TBL/MST_RE_STORE -   |
+  # 1:店番 2:最新開店日 3:予算集計店番 4:業態コード 5:当初開店日 6:退店日
+  self 1 3/5 2 6                                                |
+  # 1:店番 2:予算集計店番 3:業態コード 4:当初開店日 5:最新開店日 6:退店日
+  awk '{if($5=="0"){print $1,$2,$3,$4,$4,$6} else {print $1,$2,$3,$4,$5,$6}}'   > $tmp-store
+
+ # 11桁品番マスタ
+  cat ${lv3d}/MST/MST_COM_SHO11/TBL/MST_COM_SHO11               |
+  self 1 3 11                                                   |
+  # 1:11桁品番 2:セクション 3:商品ID1                           |
+  selr 2 "73"                                                   |
+  delf 2                                                        > $tmp-11mst
+  # 1:11桁品番 2:商品ID1
+
+ # 予算管理マスタ
+  cat ${lv3d}/MST/MST_YOSANKANRI/TBL/MST_YOSANKANRI             |
+  self 1 7 9                                                    > $tmp-yosan_mst
+  # 1:セクション 2:予算管理class3 3:予算策定対象フラグ
+
+ # カレンダマスタ
+  cat ${lv3d}/MST/MST_COM_CALENDAR/TBL/MST_COM_CALENDAR         |
+  self 1 8 9                                                    > $tmp-cal
+ # 1:日付 2:年度 3:期
+ # 処理日の年度と策定実施期
+ echo ${today}                                                  > $tmp-today
+ join1 key=1 $tmp-today $tmp-cal                                |
+ self 2 3                                                       > $tmp-year
+
+ # 年度
+ year=$(cat $tmp-year | self 1)
+
+ # 期
+ ki=$(cat $tmp-year | self 2)
+
+ #------------------------------
+ # 対象期間の売上明細の取得         ※73bprの集計方法が変わり次第、要ソースコード改訂
+ #------------------------------
+
+ for month in $(cat $tmp-month) ; do
+
+  zcat ${lv4d}/TRN/MEISAI/URI/MONTH/URI.${month}.gz     |
+  self 1 3 5 12 13 16 27                                |
+  # 1:年月 2:店番 3:セクション 4:年度 5:期 6:展開セクションフラグ 7:売上金額
+  msort key=1/3                                         |
+  awk '$3>="11"'                                        |
+  delr 3 "73"                                           |
+
+ # 予算管理マスタ情報を追加
+  self 3 1 2 4/NF                                       |
+  # 1:セクション 2:年月 3:店番 4:年度 5:期 6:展開セクションフラグ 7:売上金額
+  msort key=1                                           |
+  join1 key=1 $tmp-yosan_mst -                          |
+  # 1:セクション 2:予算管理class3 3:予算策定対象フラグ 4:年月 5:店番 6:年度 7:期 8:展開セクションフラグ 9:売上金額
+  delr 3 "0"                                            |
+  delr 8 "0"                                            |
+  self 4 5 2 6 7 9                                      |
+  # 1:年月 2:店番 3:予算管理class3 4:年度 5:期 6:売上金額
+  msort key=1/3                                         |
+  sm2 1 5 6 6
+ done                                                   > $tmp-uri
+
+ #------------------------------
+ # 15年度以降の73secの変換処理
+ #------------------------------
+
+ for month in $(cat $tmp-month) ; do
+
+  zcat ${lv4d}/TRN/MEISAI/URI/MONTH/URI.${month}.gz     |
+  self 1 3 5 6.1.11 12 13 16 27                         |
+  # 1:年月 2:店番 3:セクション 4:11桁品番　5:年度 6:期 7:展開セクションフラグ 8:売上金額
+  selr 3 "73"                                           |
+  awk '$5>="2015"'                                      |
+  self 4 1/3 5/NF                                       |
+  # 1:11桁品番 2:年月 3:店番 4:セクション 5:年度 6:期 7:売上金額
+  msort key=1                                           |
+  join1 key=1 $tmp-11mst -                              |
+  # 1:11桁品番 2:商品ID1 3:年月 4:店番 5:セクション 6:年度 7:期 8:展開セクションフラグ 9:売上金額
+  awk '{print $5$2,$3,$4,$6,$7,$8,$9}'                  |
+  # 1:セクション+商品ID1 2:年月 3:店番 4:年度 5:期 6:展開セクションフラグ 7:売上金額
+  fsed 's/730/61/1'                                     |
+  fsed 's/731/61/1'                                     |
+  fsed 's/732/64/1'                                     |
+  fsed 's/733/27/1'                                     |
+  msort key=1/3                                         |
+
+ # 予算管理マスタ情報を追加
+  join1 key=1 $tmp-yosan_mst -                          |
+  # 1:セクション 2:予算管理class3 3:予算策定対象フラグ 4:年月 5:店番 6:年度 7:期 8:展開セクションフラグ 9:売上金額
+  self 5 1 2/4 6 7 9                                    |
+  # 1:店番 2:セクション 3:集計クラス3 4:予算策定対象フラグ 5:年月 6:年度 7:期 8:売上金額
+  msort key=1/3                                         |
+  join2 +0 key=1/2 ${lv3d}/MST/MST_COM_TENKAI/TBL/MST_SEC_TENKAI        |
+  # 1:店番 2:セクション 3:展開セクションフラグ 4:予算管理class3 5:予算策定対象フラグ 6:年月 7:年度 8:期 9:売上金額
+  self 6 1 4 7 8 3 9                                    |
+  # 1:年月 2:店番 3:予算管理class3 4:年度 5:期 6:展開セクションフラグ 7:売上金額
+  delr 6 "0"                                            |
+  delf 6                                                |
+  msort key=1/3                                         |
+  # 1:年月 2:店番 3:予算管理class3 4:年度 5:期 6:売上金額
+  sm2 1 5 6 6
+ done                                                   > $tmp-73bpr
+
+ #------------------------------
+ # 2015年度以降の73bprを加える
+ #------------------------------
+ cat $tmp-uri $tmp-73bpr                                |
+ delf 4 5                                               |
+ msort key=2@1                                          |
+  # 1:年月 2:店番 3:予算管理class3 4:売上金額
+
+ #------------------------------
+ # 店舗マスタ情報の追加
+ #------------------------------
+
+ join1 key=2 $tmp-store -                               |
+ # 1:年月 2:店番 3:予算集計店番 4:業態コード 5:当初開店日 6:最新開店日 7:退店日 8:予算管理class3 9:売上金額
+ selr 4 "01"                                            |
+ awk '$7=="0"'                                          |
+ delf 2 4 5 7                                           |
+ # 1:年月 2:予算集計店番 3:最新開店日 4:予算管理class3 5:売上金額
+ msort key=1/4                                          |
+ sm2 1 4 5 5                                            > $tmp-miseuri
+
+ #------------------------------
+ # 店舗マスタ情報の追加
+ #------------------------------
+
+ # 非既存店舗判定日
+ # 4シーズン前
+ sakutei_s=$(mdate $(mdate $(echo ${today} | self 1.1.6)m/-1)m/-26)"01"
+ # 3シーズン前
+ sakutei_g1=$(mdate $(mdate $(echo ${today} | self 1.1.6)m/-1)m/-20)"01"
+ # 今シーズン
+ sakutei_g2=$(mdate $(mdate $(echo ${today} | self 1.1.6)m/-1)m/-2)"01"
+
+ #------------------------------
+ # 非既存店舗をグループ化
+ #------------------------------
+
+ # 非既存店舗（4シーズン前オープン店舗)
+ cat $tmp-miseuri                                       |
+ awk '$3>"'${sakutei_s}'"'                              |
+ awk '$3<"'${sakutei_g1}'"'                             |
+ awk '{print $0,"3"}'                                   |
+ # 1:年月 2:予算集計店番 3:最新開店日 4:予算管理マスタ(class3) 5:売上金額 6:既存区分
+ self 2 6                                               |
+ # 1:店番 2:既存区分
+ msort key=1/2                                          |
+ uniq                                                   > $tmp-sakutei_g3
+
+ # 非既存店舗（3～1シーズン前オープン店舗）
+ cat $tmp-miseuri                                       |
+ awk '$3>="'${sakutei_g1}'"'                            |
+ awk '$3<"'${sakutei_g2}'"'                             |
+ awk '{print $0,"2"}'                                   |
+ # 1:年月 2:予算集計店番 3:最新開店日 4:予算管理マスタ(class3) 5:売上金額 6:既存区分
+ self 2 6                                               |
+ # 1:予算集計店番 2:既存区分
+ msort key=1/2                                          |
+ uniq                                                   > $tmp-sakutei_g2
+
+ # 非既存店舗（今シーズンオープン店舗）
+ cat $tmp-miseuri                                       |
+ awk '$3>="'${sakutei_g2}'"'                            |
+ awk '{print $0,"1"}'                                   |
+ # 1:年月 2:予算集計店番 3:最新開店日 4:予算管理マスタ(class3) 5:売上金額 6:既存区分
+ self 2 6                                               |
+ # 1:予算集計店番 2:既存区分
+ msort key=1/2                                          |
+ uniq                                                   > $tmp-sakutei_g1
+
+ #------------------------------
+ # 実績に既存区分を追加
+ #------------------------------
+
+ # 非既存区分入りの店舗マスタ作成
+ cat $tmp-sakutei_g1 $tmp-sakutei_g2 $tmp-sakutei_g3    |
+ # 1:店番 2:既存区分
+ msort key=1/2                                                          > $tmp-store2
+
+ cat $tmp-miseuri                                                       |
+ # 1:年月 2:予算集計店番 3:最新開店日 4:予算管理class3 5:売上金額
+ delf 3                                                                 |
+ msort key=2/1                                                          |
+
+ # 非既存以外を既存とし、区分０をセット
+ join2 +0 key=2 $tmp-store2 -                                           |
+ # 1:年月 2:予算集計店番 3:既存区分 4:予算管理(class3) 5:売上金額
+ self 1 2 4 3 5                                                         |
+ msort key=1/4                                                          > $tmp-miseuri2
+ # 1:年月 2:予算集計店番 3:予算管理(class3) 4:既存区分 5:売上金額
+
+ #------------------------------
+ # 各時系列データの作成
+ #------------------------------
+
+ #------------------------------
+ # 前年データ
+ #------------------------------
+
+ # 抽出対象月
+ cat $tmp-month                                         |
+ head -n 12                                             > $tmp-zmonth
+
+ cat $tmp-miseuri2                                      |
+ join0 key=1 $tmp-zmonth -                              |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ delf 1                                                 |
+ msort key=1/3                                          |
+ # 1:店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+ sm2 1 3 4 4                                            > $tmp-zenuri
+ # 1:店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+
+ if [ $(head -n 1 $tmp-zmonth) -eq "201309" ] ; then
+  cat ${apld}/LV4/JIGYO_YOSAN/73_bpr/URI.2013.2_YEAR    |
+  # 1:店番 2:予算管理class3 3:売上
+  msort key=1/2                                         |
+  join2 +0 key=1 $tmp-store2 -                          |
+  # 1:店番 2:既存区分 3:予算管理class3 4:売上
+  self 1 3 2 4                                          |
+  # 1:店番 2:予算管理class3 3:既存区分 4:売上
+  msort key=1/3                                         |
+  sm2 1 3 4 4                                           > $tmp-bpr_kako
+
+ elif [ $(head -n 1 $tmp-zmonth) -eq "201409" ] ; then
+  cat ${apld}/LV4/JIGYO_YOSAN/73_bpr/URI.2014.2_HALF    |
+  # 1:店番 2:予算管理class3 3:売上
+  msort key=1/2                                         |
+  join2 +0 key=1 $tmp-store2 -                          |
+  # 1:店番 2:既存区分 3:予算管理class3 4:売上
+  self 1 3 2 4                                          |
+  # 1:店番 2:予算管理class3 3:既存区分 4:売上
+  msort key=1/3                                         |
+  # 1:店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+  sm2 1 3 4 4                                           > $tmp-bpr_kako
+
+ else
+  touch $tmp-kara
+ fi
+
+ if [ -e "$tmp-bpr_kako" ] ; then
+  cat $tmp-zenuri $tmp-bpr_kako                         |
+  # 1:店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+  msort key=1/3                                         |
+  # 1:店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+  sm2 1 3 4 4                                           > $tmp-zenuri2
+
+ else
+  touch $tmp-kara2
+ fi
+
+ #------------------------------
+ # 本年データ
+ #------------------------------
+
+ # 抽出対象月
+ cat $tmp-month                                         |
+ tail -n +13                                            |
+ head -n 12                                             > $tmp-hmonth
+
+ cat $tmp-miseuri2                                      |
+ join0 key=1 $tmp-hmonth -                              |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ delf 1                                                 |
+ msort key=1/2                                          |
+ # 1:店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+ sm2 1 3 4 4                                            > $tmp-honuri
+ # 1:店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+
+ #------------------------------
+ # 前年3ヶ月データ
+ #------------------------------
+
+ # 抽出対象月
+ cat $tmp-month                                         |
+ tail -n +13                                            |
+ head -n 3                                              > $tmp-z3month
+
+ cat $tmp-miseuri2                                      |
+ join0 key=1 $tmp-z3month -                             |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ delf 1                                                 |
+ msort key=1/2                                          |
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+ sm2 1 3 4 4                                            > $tmp-z3uri
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+
+ #------------------------------
+ # 直近3ヶ月データ
+ #------------------------------
+
+ # 抽出対象月
+ cat $tmp-month                                         |
+ tail -n 3                                              > $tmp-3month
+
+ cat $tmp-miseuri2                                      |
+ join0 key=1 $tmp-3month -                              |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ delf 1                                                 |
+ msort key=1/2                                          |
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+ sm2 1 3 4 4                                            > $tmp-3uri
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+
+ #------------------------------
+ # 当初予算用実績データ
+ #------------------------------
+
+ # 抽出対象月
+ cat $tmp-hmonth                                        |
+ head -n 6                                              > $tmp-tmonth
+
+ cat $tmp-miseuri2                                      |
+ join0 key=1 $tmp-tmonth -                              |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ delf 1                                                 |
+ msort key=1/2                                          |
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+ sm2 1 3 4 4                                            > $tmp-turi
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+
+ #------------------------------
+ # 修正予算用実績データ
+ #------------------------------
+
+ # 抽出対象月
+ cat $tmp-hmonth                                        |
+ tail -n 6                                              > $tmp-smonth
+
+ cat $tmp-miseuri2                                      |
+ join0 key=1 $tmp-smonth -                              |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ delf 1                                                 |
+ msort key=1/2                                          |
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+ sm2 1 3 4 4                                            > $tmp-suri
+ # 1:予算集計店番 2:予算管理マスタ(class3) 3:既存区分 4:売上金額
+
+ #------------------------------
+ # 月別前年実績（当初予算）
+ #------------------------------
+
+ # データレイアウトの作成
+ cat $tmp-store2                                        |
+ msort key=1                                            |
+ joinx $tmp-tmonth -                                    |
+ # 1:年月 2:店番 3:既存区分
+ delf 3                                                 > $tmp-store_t
+ # 1:年月 2:店番
+
+ cat $tmp-miseuri2                                      |
+ join1 key=1 $tmp-tmonth -                              |
+ loopj num=2 $tmp-store_t -                             |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ self 3 2 4 1 5                                         |
+ # 1:予算管理マスタ(class3) 2:予算集計店番 3:既存区分 4:年月 5:売上金額
+ msort key=2@1@4                                        |
+ map num=3                                              |
+ ysum num=3                                             |
+ tail -n +2                                             |
+ msort key=1/2                                          > $tmp-t_zyear
+ # 1:予算管理マスタ(class3) 2:予算集計店番 3:既存区分 4:年月 5:売上金額
+
+# -------------------月別データ作成---------------------------------------------------------
+
+ #------------------------------
+ # 月別前年実績（修正予算）
+ #------------------------------
+
+ # データレイアウトの作成
+ cat $tmp-store2                                        |
+ msort key=1                                            |
+ joinx $tmp-smonth -                                    |
+ # 1:年月 2:店番 3:既存区分
+ delf 3                                                 > $tmp-store_s
+ # 1:年月 2:店番
+
+ cat $tmp-miseuri2                                      |
+ join1 key=1 $tmp-smonth -                              |
+ loopj num=2 $tmp-store_s -                             |
+ # 1:年月 2:予算集計店番 3:予算管理マスタ(class3) 4:既存区分 5:売上金額
+ self 3 2 4 1 5                                         |
+ # 1:予算管理マスタ(class3) 2:予算集計店番 3:既存区分 4:年月 5:売上金額
+ msort key=2@1@4                                        |
+ map num=3                                              |
+ ysum num=3                                             |
+ tail -n +2                                             |
+ msort key=1/2                                          > $tmp-s_zyear
+ # 1:予算管理マスタ(class3) 2:予算集計店番 3:既存区分 4:年月 5:売上金額
+
+ #------------------------------
+ # 月別前年実績をまとめる
+ #------------------------------
+
+ loopj num=3 $tmp-t_zyear $tmp-s_zyear                  |
+ delr 1 "0"                                             |
+ msort key=2/1                                          |
+ # 1:予算管理マスタ(class3) 2:予算集計店番 3:既存区分 4～10:月売上(修正予算の前年実績）11～17:月売上
+ awk '{print $1,$2,"'${year}'","'${ki}'",$3,$10,$4,$5,$6,$7,$8,$9,$17,$11,$12,$13,$14,$15,$16,$10+$17}' |
+ comma 6/NF                                             > ${apld}/LV4/JIGYO_MISE_YOSAN/${year}.${ki}
+
+ touch ${apld}/LV4/JIGYO_MISE_YOSAN/KARI_MISE_YOSAN
+ touch ${apld}/LV4/JIGYO_MISE_YOSAN/HON_MISE_YOSAN
+ touch ${apld}/LV4/JIGYO_MISE_YOSAN/STATUS
+
+# -------------------月別データ作成---------------------------------------------------------
+
+ #------------------------------
+ # 予算策定（既存）
+ #------------------------------
+
+ # 前年比を求める
+ loopj num=3 $tmp-honuri $tmp-zenuri2           |
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:本年売上 5:前年売上
+ lcalc '$0,$4/$5'                               |
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:本年売上 5:前年売上 6:前年比
+
+ # 既存店舗を抽出
+ tee $tmp-zenhi                                 |
+ selr 3 "0"                                     |
+ marume 6.2                                     |
+ self 1 2 3 6                                   > $tmp-kison_zenhi
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比
+
+ # 直近3ヶ月比を求める
+ loopj num=3 $tmp-3uri $tmp-z3uri               |
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:本年3ヶ月売上 5:前年3ヶ月売上
+ lcalc '$0,$4/$5'                               |
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:本年3ヶ月売上 5:前年3ヶ月売上 6:前年比
+
+ # 既存店舗を抽出
+ tee $tmp-zenhi_3k                              |
+ selr 3 "0"                                     |
+ marume 6.2                                     |
+ self 1 2 3 6                                   > $tmp-kison_zenhi_3k
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比
+
+ # 昨対差を算出
+ loopj num=3 $tmp-kison_zenhi_3k $tmp-kison_zenhi       |
+ lcalc '$0,$4-$5'                                       |
+ marume 6.2                                             > $tmp-kison_sakusa
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比（直近3ヶ月）5:前年比（年間）6:昨対差
+
+ #--------------------
+ # 一次調整
+ #--------------------
+
+ # 前年比115％以上店舗の一次調整
+ cat $tmp-kison_zenhi   |
+ awk '$4>="1.15"'       |
+ awk '{print $0,"1.0"}' > $tmp-kison_zenhi115
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比 5:調整後前年比
+
+ # 前年比69％以下店舗の一次調整
+ cat $tmp-kison_zenhi   |
+ awk '$4<="0.69"'       |
+ awk '{print $0,"1.1"}' > $tmp-kison_zenhi69
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比 5:調整後前年比
+
+ # それ以外
+ cat $tmp-kison_zenhi   |
+ awk '$4<1.15'          |
+ awk '$4>0.69'          |
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比
+ msort key=4            |
+ join1 key=4 ${apld}/LV4/JIGYO_YOSAN/MISE_SATEI/KISON_SATEI1 -  > $tmp-kison_zenhi_other
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比 5:調整後前年比
+
+ # 全てまとめる
+ cat $tmp-kison_zenhi_other $tmp-kison_zenhi69 $tmp-kison_zenhi115      |
+ msort key=1/3                                                          |
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:前年比 5:調整後前年比
+ self 1 2 3 5                                                           >  $tmp-kison_zenhi_satei1
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:調整後前年比
+
+ #--------------------
+ # 二次調整
+ #--------------------
+ cat $tmp-kison_sakusa                                                  |
+ self 1/3 6
+ # 1:予算集計店番 2:予算管理class3 3:既存区分 4:昨対差
+
+
+
+
+
+
+ # 伸長率の算出（一次調整＋二次調整）
+
+
+
+
+
+
+
+
+
+
+
+####################################################################################
+#終了時刻の記録
+####################################################################################
+echo "$HOSTNAME $(basename $0) END $(date +%Y%m%d%H%M%S)" >> ${logd}/UPCNT
+touch $semd/$(basename $0).$HOSTNAME.END.${today}
+
+
+#rm -f $tmp-*
+exit 0
+
+[beams@ip-10-202-4-11 SHELL]$
